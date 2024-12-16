@@ -11,6 +11,10 @@
 #include "filters.h"
 #include "plugin.h"
 
+#ifdef USE_BITSHUFFLE
+#include "bshuf_h5filter.h"
+#endif
+
 /* XDS does not provide an error callback facility, so just write to stderr
    for now - generally regarded as poor practice */
 #define ERROR_OUTPUT stderr
@@ -285,6 +289,12 @@ void plugin_open(const char *filename, int info[1024], int *error_flag) {
   if (init_h5_error_handling() < 0) {
     ERROR_JUMP(-2, done, "Failed to configure HDF5 error handling");
   }
+
+#ifdef USE_BITSHUFFLE
+  if (bshuf_register_h5filter() < 0 ) {
+    ERROR_JUMP(-2, done, "Failed to register bitshuffle filter");
+  }
+#endif
 
   fill_info_array(info);
   file_id = H5Fopen(filename, H5F_ACC_RDONLY, H5P_DEFAULT);

@@ -573,9 +573,33 @@ int get_dectris_eiger_pixel_mask(const struct ds_desc_t *desc, int *buffer) {
     ERROR_JUMP(-1, done, "Error opening detectorSpecific/pixel_mask");
   }
 
+  // what if this is compressed?
+  hid_t dcpl    = H5Dget_create_plist(ds_id);
+  int n_filters = H5Pget_nfilters(dcpl);
+  H5Z_filter_t    filter_id;
+  if (n_filters>0) {
+	unsigned int    flags;
+	size_t          nelmts = 1;
+	unsigned int    values_out[1] = {99};
+	char            filter_name[80];
+	filter_id = H5Pget_filter(dcpl, (unsigned) 0, &flags, &nelmts, values_out, sizeof(filter_name), filter_name, NULL);
+	if (filter_id>=0) {
+	  fprintf(stderr," filter name =\"%s\"\n",filter_name);
+	}
+  }
+
   err = H5Dread(ds_id, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT, buffer);
   if (err < 0) {
-    ERROR_JUMP(-1, close_dataset, "Error reading detectorSpecific/pixel_mask");
+	if (n_filters>0) {
+	  ERROR_JUMP(-1, close_dataset, "Error reading detectorSpecific/pixel_mask with filter(s)");
+	}
+	else {
+	  ERROR_JUMP(-1, close_dataset, "Error reading detectorSpecific/pixel_mask");
+	}
+  }
+
+  if (H5Zfilter_avail(BS_H5_FILTER_ID)) {
+	fprintf(stderr," bitshuffle filter is available now since H5Dread (of pixel-mask) triggered loading of the filter.\n");
   }
 
 close_dataset:
