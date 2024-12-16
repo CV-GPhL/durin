@@ -5,6 +5,7 @@
 
 #include <hdf5.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "file.h"
 #include "filters.h"
@@ -69,6 +70,17 @@ static hid_t file_id = 0;
 static struct ds_desc_t *data_desc = NULL;
 static int *mask_buffer = NULL;
 
+// CV-20240605: potentially provide a mapping from frame number (as
+//              requested by caller) to actual 2D slice within 3D data
+//              array.
+//
+//              This is defined by the environment variable
+//              DURIN_IMAGE2ORDINAL (see below).
+int *image2ordinal = NULL;
+int image2ordinal_debug = 0;
+int image2ordinal_imin = 0;
+int image2ordinal_imax = 0;
+
 void fill_info_array(int info[1024]) {
   info[0] = DLS_CUSTOMER_ID;
   info[1] = VERSION_MAJOR;
@@ -86,6 +98,92 @@ void fill_info_array(int info[1024]) {
   cenv = getenv("DURIN_RESET_UNMASKED_PIXEL");
   if (cenv!=NULL) {
     info[6] = atoi(cenv);
+  }
+
+  cenv = getenv("DURIN_IMAGE2ORDINAL");
+  if (cenv!=NULL&&(!image2ordinal)) {
+
+    char *denv = getenv("DURIN_IMAGE2ORDINAL_DEBUG");
+    if (denv!=NULL) {
+      image2ordinal_debug=1;
+    }
+
+    // <ordinal_start>,<image_1_start>-<image_1_end>,<image_2_start>-<image_2_end>,..,<image_N_start>-<image_N_end>
+    if (image2ordinal_debug) printf("DURIN_IMAGE2ORDINAL = \"%s\"\n",cenv);
+
+    const char outer_delimiters[] = ",";
+    const char inner_delimiters[] = "-";
+
+    char *found;
+
+    char *outer_saveptr;
+    char *inner_saveptr;
+
+    int ordinal_start = 0;
+    int ordinal = 0;
+    int ntt = -1;
+    found = strtok_r(cenv,outer_delimiters, &outer_saveptr);
+    if (found!=NULL) {
+      int tt[1000][2];
+      while(found) {
+        if (ordinal_start==0) {
+          ordinal_start = atoi(found);
+          ordinal = ordinal_start - 1;
+        }
+        else {
+          char* s = strtok_r(found, inner_delimiters, &inner_saveptr);
+          if (s!=NULL) {
+            int i1 = atoi(s);
+            s = strtok_r(NULL,inner_delimiters, &inner_saveptr);
+            if (s!=NULL) {
+              int i2 = atoi(s);
+              ntt++;
+              if (ntt<=1000) {
+                tt[ntt][0] = i1;
+                tt[ntt][1] = i2;
+                for(int i=i1; i<=i2; ++i) {
+                  ordinal++;
+                  if (ordinal==1) {
+                    image2ordinal_imin=i;
+                    image2ordinal_imax=i;
+                  }
+                  else {
+                    if (i<image2ordinal_imin) image2ordinal_imin=i;
+                    if (i>image2ordinal_imax) image2ordinal_imax=i;
+                  }
+                }
+              }
+            }
+          }
+        }
+        found = strtok_r(NULL,outer_delimiters,&outer_saveptr);
+      }
+
+      if (ordinal_start>0) {
+        if (image2ordinal_debug) {
+          printf("ordinal_start, end = %d %d\n",ordinal_start, ordinal);
+          printf("imin, imax         = %d %d\n",image2ordinal_imin,image2ordinal_imax);
+        }
+
+        // allocate array to go from image number/id to ordinal:
+        image2ordinal = malloc((image2ordinal_imax-image2ordinal_imin+1) * sizeof(image2ordinal_imin));
+        int ordinal = ordinal_start - 1;
+        for(int i=0; i<=ntt; i++) {
+          for(int j=tt[i][0];j<=tt[i][1];j++) {
+            ordinal++;
+            //printf(" %d -> %d\n",ordinal,j);
+            image2ordinal[j] = ordinal;
+          }
+        }
+        if (image2ordinal&&image2ordinal_debug) {
+          for(int i=image2ordinal_imin; i<=image2ordinal_imax; i++) {
+            if (image2ordinal[i]>0) {
+              printf(" %d -> %d\n",i,image2ordinal[i]);
+            }
+          }
+        }
+      }
+    }
   }
 
 }
@@ -279,9 +377,26 @@ void plugin_get_data(int *frame_number, int *nx, int *ny, int *data_array,
     }
   }
 
-  if (data_desc->get_data_frame(data_desc, (*frame_number) - 1, buffer) < 0) {
+  int ordinal = *frame_number;
+  if (image2ordinal) {
+    if (ordinal < image2ordinal_imin || ordinal>image2ordinal_imax) {
+      char message[64] = {0};
+      sprintf(message, "Failed to map frame %d to ordinals since outside of range %d - %d", ordinal,image2ordinal_imin,image2ordinal_imax);
+      ERROR_JUMP(-2, done, message);
+    }
+    ordinal = image2ordinal[ordinal];
+    if (ordinal!=*frame_number) {
+      if (image2ordinal_debug) printf("fetching data from ordinal %d for frame %d\n",ordinal,*frame_number);
+    }
+  }
+
+  if (data_desc->get_data_frame(data_desc, ordinal - 1, buffer) < 0) {
     char message[64] = {0};
-    sprintf(message, "Failed to retrieve data for frame %d", *frame_number);
+    if (image2ordinal) {
+      sprintf(message, "Failed to retrieve data for frame %d (ordinal %d)", *frame_number, ordinal);
+    } else {
+      sprintf(message, "Failed to retrieve data for frame %d", *frame_number);
+    }
     ERROR_JUMP(-2, done, message);
   }
 
@@ -289,7 +404,11 @@ void plugin_get_data(int *frame_number, int *nx, int *ny, int *data_array,
     if (convert_to_int_and_mask(buffer, data_desc->data_width, info[6], data_array,
                                 frame_size_px, mask_buffer) < 0) {
       char message[64];
-      sprintf(message, "Error converting data for frame %d", *frame_number);
+      if (image2ordinal) {
+        sprintf(message, "Error converting data for frame %d (ordinal %d)", *frame_number, ordinal);
+      } else {
+        sprintf(message, "Error converting data for frame %d", *frame_number);
+      }
       ERROR_JUMP(-2, done, message);
     }
   } else {
@@ -313,6 +432,11 @@ void plugin_close(int *error_flag) {
     }
   }
   file_id = 0;
+
+  if (image2ordinal) {
+    free(image2ordinal);
+    image2ordinal = NULL;
+  }
 
   if (mask_buffer) {
     free(mask_buffer);
