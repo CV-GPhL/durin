@@ -582,11 +582,15 @@ int get_dectris_eiger_pixel_mask(const struct ds_desc_t *desc, int *buffer) {
     size_t          nelmts = 1;
     unsigned int    values_out[1] = {99};
     char            filter_name[80];
-    filter_id = H5Pget_filter(dcpl, (unsigned) 0, &flags, &nelmts, values_out, sizeof(filter_name), filter_name, NULL);
-    if (filter_id>=0) {
-      fprintf(stderr," filter name =\"%s\"\n",filter_name);
+    for ( int i_filt = 0; i_filt < n_filters; i_filt++) {
+      filter_id = H5Pget_filter(dcpl, i_filt, &flags, &nelmts, values_out, sizeof(filter_name), filter_name, NULL);
+      if (filter_id>=0) {
+        fprintf(stderr," filter #%d name =\"%s\"\n",(i_filt+1),filter_name);
+      }
     }
   }
+
+  int i0 = H5Zfilter_avail(BS_H5_FILTER_ID);
 
   err = H5Dread(ds_id, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT, buffer);
   if (err < 0) {
@@ -598,7 +602,7 @@ int get_dectris_eiger_pixel_mask(const struct ds_desc_t *desc, int *buffer) {
     }
   }
 
-  if (H5Zfilter_avail(BS_H5_FILTER_ID)) {
+  if (!i0 && H5Zfilter_avail(BS_H5_FILTER_ID)) {
     fprintf(stderr," bitshuffle filter is available now since H5Dread (of pixel-mask) triggered loading of the filter.\n");
   }
 
