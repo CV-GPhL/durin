@@ -651,13 +651,9 @@ herr_t det_visit_callback(hid_t root_id, const char *name,
       ERROR_JUMP(-1, close_mtype, message);
     }
 
-    /* at least one file has been seen where the NX_class attribute was not null
-     * terminated and extraneous bytes where being read by strcmp -  set the end
-     * byte to null
-     */
+    /* ensure the buffer is null terminated */
+    buffer[H5Tget_size(t_id)] = '\0';
 
-    if (str_size > 0)
-      ((char *)buffer)[str_size] = '\0';
     /* test for NXdata or NXdetector */
     {
       char *nxclass = str_size > 0 ? (char *)buffer : *((char **)buffer);
